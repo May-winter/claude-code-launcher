@@ -86,6 +86,21 @@ def _default_vscode() -> str:
     return shutil.which("code") or ""
 
 
+def _detect_claude_code_extension() -> bool:
+    """
+    检测 VS Code 是否安装了 Claude Code 扩展。
+    扩展目录：~/.vscode/extensions/anthropic.claude-code-*
+    """
+    patterns = [
+        os.path.expanduser("~/.vscode/extensions/anthropic.claude-code-*"),
+        os.path.expanduser("~/.vscode-insiders/extensions/anthropic.claude-code-*"),
+    ]
+    for pat in patterns:
+        if glob.glob(pat):
+            return True
+    return False
+
+
 def _default_claude_desktop() -> str:
     """自动检测 Claude Desktop 路径；找不到返回空字符串。"""
     if IS_WIN:
@@ -368,6 +383,7 @@ COLOR_OK      = "#10B981"  # 绿：成功
 COLOR_ERROR   = "#EF4444"  # 红：失败
 
 _icon = None
+_VSCODE_LABEL = "VS Code"  # 由 main() 按是否检测到 Claude Code 扩展改写
 
 
 def _make_icon_raw(color: str) -> Image.Image:
@@ -509,7 +525,8 @@ def _do_launch(fns: list, label: str):
 def action_launch_all(icon, item):
     threading.Thread(
         target=_do_launch,
-        args=([launch_vscode, launch_claude_desktop], "VS Code + Claude Desktop"),
+        args=([launch_vscode, launch_claude_desktop],
+              f"{_VSCODE_LABEL} + Claude Desktop"),
         daemon=True,
     ).start()
 
@@ -517,7 +534,7 @@ def action_launch_all(icon, item):
 def action_launch_vscode(icon, item):
     threading.Thread(
         target=_do_launch,
-        args=([launch_vscode], "VS Code"),
+        args=([launch_vscode], _VSCODE_LABEL),
         daemon=True,
     ).start()
 
@@ -556,7 +573,7 @@ def action_quit(icon, item):
 # ─────────────────────────────────────────
 
 def main():
-    global _icon
+    global _icon, _VSCODE_LABEL
 
     # CLI: python claude_launcher.py --generate-icon [path.ico]
     if len(sys.argv) > 1 and sys.argv[1] == "--generate-icon":
@@ -575,22 +592,30 @@ def main():
     # 按已安装的应用动态构建菜单
     has_vscode = _is_installed(VSCODE_PATH)
     has_claude = _is_installed(CLAUDE_DESKTOP_PATH)
+    has_cc_ext = _detect_claude_code_extension() if has_vscode else False
 
     print(f"[启动] VS Code:        {VSCODE_PATH or '未检测到'}")
     print(f"[启动] Claude Desktop: {CLAUDE_DESKTOP_PATH or '未检测到'}")
+    print(f"[启动] Claude Code 扩展: {'已安装' if has_cc_ext else '未检测到'}")
+
+    # Claude Code 扩展装在 VS Code 里，启动 VS Code 时扩展会自动加载并继承代理
+    # 因此有扩展时只改文案，让用户知道这一下启动是带 Claude Code 的
+    vscode_label = "VS Code + Claude Code" if has_cc_ext else "VS Code"
+    _VSCODE_LABEL = vscode_label
 
     items = []
     if has_vscode and has_claude:
         items += [
-            pystray.MenuItem("🚀 启动 VS Code + Claude Desktop",
+            pystray.MenuItem(f"🚀 启动 {vscode_label} + Claude Desktop",
                              action_launch_all, default=True),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem("启动 VS Code（仅）",      action_launch_vscode),
+            pystray.MenuItem(f"启动 {vscode_label}（仅）", action_launch_vscode),
             pystray.MenuItem("启动 Claude Desktop（仅）", action_launch_claude),
         ]
     elif has_vscode:
         items += [
-            pystray.MenuItem("🚀 启动 VS Code", action_launch_vscode, default=True),
+            pystray.MenuItem(f"🚀 启动 {vscode_label}",
+                             action_launch_vscode, default=True),
         ]
     elif has_claude:
         items += [
