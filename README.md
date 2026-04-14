@@ -57,7 +57,7 @@ cd claude-code-launcher
 
 1. 开启科学上网工具
 2. 双击桌面快捷方式（或运行 `python3 claude_launcher.py`）
-3. 系统托盘出现**紫色圆形图标**
+3. 系统托盘出现**节点光环图标**（深色背景 + 彩色分割环）
 4. 右键 → **启动 VS Code + Claude Desktop**
 
 ### 托盘图标颜色含义
@@ -128,7 +128,6 @@ CANDIDATE_PORTS = [7890, 7891, 7892, 7893, 10809, 10808, 1080, 8080, 8118]
 
 欢迎提 Issue 和 PR，特别欢迎：
 - 更多代理工具的自动识别
-- 自定义托盘图标
 - 开机自启支持
 
 ---
@@ -168,7 +167,7 @@ cd claude-code-launcher
 
 1. Start your proxy tool
 2. Launch the app from your desktop shortcut (or `python3 claude_launcher.py`)
-3. Find the **purple circle** in your system tray
+3. Find the **node-ring icon** (dark background with colored segmented ring) in your system tray
 4. Right-click → **Launch VS Code + Claude Desktop**
 
 ### Icon colors
