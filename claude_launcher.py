@@ -8,8 +8,11 @@ Claude Code Launcher - Cross Platform
 
 import sys
 import os
+import glob
+import json
 import math
 import time
+import shutil
 import socket
 import threading
 import subprocess
@@ -26,41 +29,134 @@ IS_MAC   = sys.platform == "darwin"
 IS_LINUX = sys.platform.startswith("linux")
 
 # ─────────────────────────────────────────
-# 各平台默认路径
+# 各平台默认路径（多候选 + 注册表 + PATH 搜索）
 # ─────────────────────────────────────────
 
+def _first_existing(paths):
+    """返回列表中第一个真实存在的路径，都不存在则返回 None。"""
+    for p in paths:
+        if p and os.path.exists(p):
+            return p
+    return None
+
+
+def _win_app_path(exe_name: str):
+    """
+    从 Windows 注册表 App Paths 读已注册程序的完整路径。
+    安装器通常会在这里写入自己，最可靠。
+    """
+    if not IS_WIN:
+        return None
+    try:
+        import winreg
+    except ImportError:
+        return None
+    for root in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+        try:
+            with winreg.OpenKey(
+                root,
+                rf"Software\Microsoft\Windows\CurrentVersion\App Paths\{exe_name}",
+            ) as key:
+                path, _ = winreg.QueryValueEx(key, None)
+                if path and os.path.exists(path):
+                    return path
+        except OSError:
+            continue
+    return None
+
+
 def _default_vscode() -> str:
+    """自动检测 VS Code 路径；找不到返回空字符串。"""
     if IS_WIN:
-        return os.path.expandvars(
-            r"%LOCALAPPDATA%\Programs\Microsoft VS Code\Code.exe"
-        )
+        candidates = [
+            _win_app_path("Code.exe"),
+            os.path.expandvars(r"%LOCALAPPDATA%\Programs\Microsoft VS Code\Code.exe"),
+            os.path.expandvars(r"%ProgramFiles%\Microsoft VS Code\Code.exe"),
+            os.path.expandvars(r"%ProgramFiles(x86)%\Microsoft VS Code\Code.exe"),
+            shutil.which("code"),
+        ]
+        return _first_existing(candidates) or ""
     if IS_MAC:
-        return "/Applications/Visual Studio Code.app/Contents/MacOS/Electron"
-    # Linux: 通常在 PATH 里，直接用命令名
-    return "code"
+        candidates = [
+            "/Applications/Visual Studio Code.app/Contents/MacOS/Electron",
+            os.path.expanduser("~/Applications/Visual Studio Code.app/Contents/MacOS/Electron"),
+        ]
+        return _first_existing(candidates) or ""
+    # Linux
+    return shutil.which("code") or ""
 
 
 def _default_claude_desktop() -> str:
+    """自动检测 Claude Desktop 路径；找不到返回空字符串。"""
     if IS_WIN:
-        return os.path.expandvars(r"%LOCALAPPDATA%\AnthropicClaude\claude.exe")
+        base = os.path.expandvars(r"%LOCALAPPDATA%\AnthropicClaude")
+        # Squirrel 版本化子目录（app-X.Y.Z\claude.exe），按版本倒序取最新
+        app_versions = sorted(
+            glob.glob(os.path.join(base, "app-*", "claude.exe")) +
+            glob.glob(os.path.join(base, "app-*", "Claude.exe")),
+            reverse=True,
+        )
+        candidates = [
+            _win_app_path("claude.exe"),
+            os.path.join(base, "claude.exe"),
+            os.path.join(base, "Claude.exe"),
+            *app_versions,
+            os.path.expandvars(r"%LOCALAPPDATA%\Programs\claude-desktop\claude.exe"),
+            shutil.which("claude"),
+        ]
+        return _first_existing(candidates) or ""
     if IS_MAC:
-        return "/Applications/Claude.app/Contents/MacOS/Claude"
+        p = "/Applications/Claude.app/Contents/MacOS/Claude"
+        return p if os.path.exists(p) else ""
     # Linux 暂无官方 Claude Desktop
     return ""
 
 
 # ─────────────────────────────────────────
-# 用户配置区
+# 用户配置加载（launcher_config.json 可覆盖所有默认值）
 # ─────────────────────────────────────────
 
-VSCODE_PATH         = _default_vscode()
-CLAUDE_DESKTOP_PATH = _default_claude_desktop()
+def _config_path() -> str:
+    """配置文件路径：与脚本同目录的 launcher_config.json。"""
+    return os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "launcher_config.json",
+    )
 
-# 默认打开的项目目录，留空则不指定
-DEFAULT_PROJECT_DIR = ""
 
-# 候选代理端口（按顺序探测）
-CANDIDATE_PORTS = [7890, 7891, 7892, 7893, 10809, 10808, 1080, 8080, 8118]
+def _load_config() -> dict:
+    """
+    读取用户配置。文件不存在则返回空 dict，读失败时打印警告。
+
+    示例 launcher_config.json：
+      {
+        "vscode_path": "D:\\Tools\\VSCode\\Code.exe",
+        "claude_desktop_path": "",
+        "default_project_dir": "D:\\projects",
+        "candidate_ports": [7890, 7892, 10809]
+      }
+    """
+    path = _config_path()
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"[配置] 读取 {path} 失败：{e}")
+        return {}
+
+
+_cfg = _load_config()
+
+# 用户可在 JSON 里覆盖；未填则使用自动检测
+VSCODE_PATH         = _cfg.get("vscode_path")         or _default_vscode()
+CLAUDE_DESKTOP_PATH = _cfg.get("claude_desktop_path") or _default_claude_desktop()
+DEFAULT_PROJECT_DIR = _cfg.get("default_project_dir", "")
+CANDIDATE_PORTS     = _cfg.get(
+    "candidate_ports",
+    [7890, 7891, 7892, 7893, 10809, 10808, 1080, 8080, 8118],
+)
 
 # ─────────────────────────────────────────
 # 代理检测
@@ -74,6 +170,31 @@ def is_port_listening(port: int) -> bool:
             return True
         except (ConnectionRefusedError, socket.timeout, OSError):
             return False
+
+
+def _verify_proxy(port: int, timeout: float = 3.0) -> bool:
+    """
+    通过代理对 api.anthropic.com:443 发起 HTTP CONNECT 隧道请求，
+    验证代理上游是否真正可达。
+
+    为什么不用 urllib + HTTP：
+      · HTTP 请求可能被 Clash 本地伪造成功（缓存 / fake-ip / 规则返回）
+      · api.anthropic.com 正是 Claude Code 的真实目标端点
+      · CONNECT 隧道无法被代理凭空伪造，上游断线会返回 502/504 或超时
+    """
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=timeout) as sock:
+            sock.settimeout(timeout)
+            sock.sendall(
+                b"CONNECT api.anthropic.com:443 HTTP/1.1\r\n"
+                b"Host: api.anthropic.com:443\r\n"
+                b"\r\n"
+            )
+            # 代理返回形如 "HTTP/1.1 200 Connection established\r\n..."
+            resp = sock.recv(64)
+            return resp.startswith(b"HTTP/1.") and b" 200 " in resp
+    except Exception:
+        return False
 
 
 def _get_system_proxy_port_windows() -> int | None:
@@ -167,12 +288,12 @@ def detect_proxy_port() -> int | None:
     else:
         sys_port = _get_system_proxy_port_linux()
 
-    if sys_port and is_port_listening(sys_port):
+    if sys_port and is_port_listening(sys_port) and _verify_proxy(sys_port):
         return sys_port
 
-    # 2. 扫描候选端口
+    # 2. 扫描候选端口（必须先监听 + 真实请求能通）
     for port in CANDIDATE_PORTS:
-        if is_port_listening(port):
+        if is_port_listening(port) and _verify_proxy(port):
             return port
 
     return None
@@ -190,19 +311,20 @@ def set_proxy_env(port: int):
 # 启动应用
 # ─────────────────────────────────────────
 
+def _is_installed(path: str) -> bool:
+    """应用是否真实存在（空字符串 / 路径不存在都视为未安装）。"""
+    return bool(path) and os.path.exists(path)
+
+
 def launch_vscode():
     env = os.environ.copy()
 
-    if IS_LINUX and VSCODE_PATH == "code":
-        # Linux 上 code 在 PATH 里，直接调用
-        args = ["code"]
-        if DEFAULT_PROJECT_DIR and os.path.isdir(DEFAULT_PROJECT_DIR):
-            args.append(DEFAULT_PROJECT_DIR)
-        subprocess.Popen(args, env=env)
-        return
-
-    if not os.path.exists(VSCODE_PATH):
-        notify("VS Code 未找到", f"路径不存在：\n{VSCODE_PATH}")
+    if not _is_installed(VSCODE_PATH):
+        notify(
+            "VS Code 未安装",
+            "未检测到 VS Code。\n"
+            "请安装后重试，或在 launcher_config.json 中手动指定 vscode_path。",
+        )
         return
 
     if IS_MAC:
@@ -221,12 +343,13 @@ def launch_vscode():
 def launch_claude_desktop():
     env = os.environ.copy()
 
-    if not CLAUDE_DESKTOP_PATH:
-        notify("Claude Desktop", "Linux 暂无官方 Claude Desktop\n可使用 VS Code + Claude Code 插件")
-        return
-
-    if not os.path.exists(CLAUDE_DESKTOP_PATH):
-        notify("Claude Desktop 未找到", f"路径不存在：\n{CLAUDE_DESKTOP_PATH}")
+    if not _is_installed(CLAUDE_DESKTOP_PATH):
+        notify(
+            "Claude Desktop 未安装",
+            "未检测到 Claude Desktop。\n"
+            "可使用 VS Code + Claude Code 扩展，\n"
+            "或在 launcher_config.json 中配置 claude_desktop_path。",
+        )
         return
 
     if IS_MAC:
@@ -360,26 +483,27 @@ def notify(title: str, message: str):
 def _do_launch(fns: list, label: str):
     """通用启动流程"""
     _icon.icon = make_icon(COLOR_WORKING)
-    notify("Claude 启动器", "正在检测代理端口...")
+    try:
+        notify("Claude 启动器", "正在检测代理端口...")
 
-    port = detect_proxy_port()
-    if port is None:
-        _icon.icon = make_icon(COLOR_ERROR)
-        notify("⚠️ 未检测到代理", "请先开启科学上网工具，再重试")
+        port = detect_proxy_port()
+        if port is None:
+            _icon.icon = make_icon(COLOR_ERROR)
+            notify("⚠️ 未检测到代理", "请先开启科学上网工具，再重试")
+            time.sleep(3)
+            return
+
+        set_proxy_env(port)
+        notify(f"✅ 端口 {port} 就绪", f"正在启动 {label}...")
+
+        for fn in fns:
+            fn()
+            time.sleep(1)
+
+        _icon.icon = make_icon(COLOR_OK)
         time.sleep(3)
+    finally:
         _icon.icon = make_icon(COLOR_IDLE)
-        return
-
-    set_proxy_env(port)
-    notify(f"✅ 端口 {port} 就绪", f"正在启动 {label}...")
-
-    for fn in fns:
-        fn()
-        time.sleep(1)
-
-    _icon.icon = make_icon(COLOR_OK)
-    time.sleep(3)
-    _icon.icon = make_icon(COLOR_IDLE)
 
 
 def action_launch_all(icon, item):
@@ -408,11 +532,18 @@ def action_launch_claude(icon, item):
 
 def action_check_proxy(icon, item):
     def _run():
-        port = detect_proxy_port()
-        if port:
-            notify("代理状态", f"✅ 端口 {port} 正在监听")
-        else:
-            notify("代理状态", "❌ 未检测到可用代理端口")
+        _icon.icon = make_icon(COLOR_WORKING)
+        try:
+            port = detect_proxy_port()
+            if port:
+                _icon.icon = make_icon(COLOR_OK)
+                notify("代理状态", f"✅ 端口 {port} 正在监听")
+            else:
+                _icon.icon = make_icon(COLOR_ERROR)
+                notify("代理状态", "❌ 未检测到可用代理端口")
+            time.sleep(3)
+        finally:
+            _icon.icon = make_icon(COLOR_IDLE)
     threading.Thread(target=_run, daemon=True).start()
 
 
@@ -441,16 +572,46 @@ def main():
             print("Linux 提示：如托盘图标不显示，请安装 gir1.2-appindicator3-0.1")
             print("  Ubuntu/Debian: sudo apt install gir1.2-appindicator3-0.1")
 
-    menu = pystray.Menu(
-        pystray.MenuItem("🚀 启动 VS Code + Claude Desktop", action_launch_all, default=True),
-        pystray.Menu.SEPARATOR,
-        pystray.MenuItem("启动 VS Code（仅）", action_launch_vscode),
-        pystray.MenuItem("启动 Claude Desktop（仅）", action_launch_claude),
+    # 按已安装的应用动态构建菜单
+    has_vscode = _is_installed(VSCODE_PATH)
+    has_claude = _is_installed(CLAUDE_DESKTOP_PATH)
+
+    print(f"[启动] VS Code:        {VSCODE_PATH or '未检测到'}")
+    print(f"[启动] Claude Desktop: {CLAUDE_DESKTOP_PATH or '未检测到'}")
+
+    items = []
+    if has_vscode and has_claude:
+        items += [
+            pystray.MenuItem("🚀 启动 VS Code + Claude Desktop",
+                             action_launch_all, default=True),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem("启动 VS Code（仅）",      action_launch_vscode),
+            pystray.MenuItem("启动 Claude Desktop（仅）", action_launch_claude),
+        ]
+    elif has_vscode:
+        items += [
+            pystray.MenuItem("🚀 启动 VS Code", action_launch_vscode, default=True),
+        ]
+    elif has_claude:
+        items += [
+            pystray.MenuItem("🚀 启动 Claude Desktop", action_launch_claude, default=True),
+        ]
+    else:
+        items += [
+            pystray.MenuItem("⚠️ 未检测到 VS Code / Claude Desktop",
+                             None, enabled=False),
+            pystray.MenuItem("请安装后重启，或编辑 launcher_config.json",
+                             None, enabled=False),
+        ]
+
+    items += [
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("检测代理状态", action_check_proxy),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("退出", action_quit),
-    )
+    ]
+
+    menu = pystray.Menu(*items)
 
     _icon = pystray.Icon(
         "claude_launcher",
