@@ -8,13 +8,14 @@ Claude Code Launcher - Cross Platform
 
 import sys
 import os
+import math
 import time
 import socket
 import threading
 import subprocess
 
 import pystray
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageColor
 
 # ─────────────────────────────────────────
 # 平台检测
@@ -246,13 +247,105 @@ COLOR_ERROR   = "#EF4444"  # 红：失败
 _icon = None
 
 
-def make_icon(color: str) -> Image.Image:
-    size = 64
-    img  = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+def _make_icon_raw(color: str) -> Image.Image:
+    """
+    渲染 256×256 RGBA 图标（科技数智风格）：
+      · 深蓝黑背景 + 外发光晕
+      · 四段分割环（状态颜色，10° 间隙）
+      · 四个间隙节点 + 四个斜向内节点
+      · 中央粗 C 弧（白色 + 高光条）
+      · C 口两端彩色端点
+    """
+    S  = 256
+    cx = cy = S // 2          # 128
+
+    img  = Image.new("RGBA", (S, S), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
-    draw.ellipse([2, 2, size - 2, size - 2], fill=color)
-    draw.arc([14, 14, size - 14, size - 14], start=40, end=320, fill="white", width=7)
+    r, g, b = ImageColor.getrgb(color)
+
+    # ── 1. 外发光晕 ──────────────────────────────────────────
+    for i in range(20, 0, -1):
+        a   = int(55 * (i / 20) ** 2.0)
+        pad = i * 6
+        draw.ellipse([pad, pad, S - pad, S - pad],
+                     outline=(r, g, b, a), width=5)
+
+    # ── 2. 深蓝黑背景圆 ──────────────────────────────────────
+    BG = 8
+    draw.ellipse([BG, BG, S - BG, S - BG], fill=(8, 10, 24, 255))
+
+    # ── 3. 中心微辉（内晕） ───────────────────────────────────
+    for i in range(7, 0, -1):
+        a = int(22 * (1 - (i - 1) / 7))
+        p = cx - 20 * i
+        if p > BG:
+            draw.ellipse([p, p, S - p, S - p], fill=(r, g, b, a))
+
+    # ── 4. 四段分割环（每段 80°，间隙 10°）────────────────────
+    RP     = 18                       # 环包围盒 padding
+    RW     = 16                       # 环描边宽度
+    GAP    = 10                       # 间隙度数
+    RING_R = (S - 2 * RP) // 2       # 110：环椭圆半径
+
+    for i in range(4):
+        s0 = i * 90 + GAP // 2 - 90  # 旋转 -90° 使首段从顶部开始
+        s1 = (i + 1) * 90 - GAP // 2 - 90
+        draw.arc([RP, RP, S - RP, S - RP],
+                 start=s0, end=s1, fill=(r, g, b, 255), width=RW)
+
+    # 间隙位置的节点（上/右/下/左）
+    DS = 11
+    for deg in [0, 90, 180, 270]:
+        rad = math.radians(deg - 90)          # 0 → 顶部
+        dx  = int(cx + RING_R * math.cos(rad))
+        dy  = int(cy + RING_R * math.sin(rad))
+        draw.ellipse([dx - DS, dy - DS, dx + DS, dy + DS],
+                     fill=(r, g, b, 235))
+
+    # ── 5. 四个斜向内节点（45° 方向，电路感） ─────────────────
+    NR = 88; NS = 8
+    for deg in [45, 135, 225, 315]:
+        rad = math.radians(deg)
+        nx  = int(cx + NR * math.cos(rad))
+        ny  = int(cy + NR * math.sin(rad))
+        draw.ellipse([nx - NS, ny - NS, nx + NS, ny + NS],
+                     fill=(r, g, b, 120))
+
+    # ── 6. 中央 C 弧 ─────────────────────────────────────────
+    CP  = 64                          # 弧包围盒 padding
+    CW  = 24                          # 弧描边宽度
+    C_R = (S - 2 * CP) // 2          # 64：弧半径
+
+    draw.arc([CP, CP, S - CP, S - CP],
+             start=40, end=320, fill="white", width=CW)
+    # 内侧蓝白高光条（立体感）
+    draw.arc([CP + 5, CP + 5, S - CP - 5, S - CP - 5],
+             start=42, end=318,
+             fill=(200, 220, 255, 130), width=9)
+
+    # ── 7. C 口端点（彩色圆点，电路端子感）───────────────────
+    CAP = 13
+    for deg in [40, 320]:
+        rad = math.radians(deg)
+        ex  = int(cx + C_R * math.cos(rad))
+        ey  = int(cy + C_R * math.sin(rad))
+        draw.ellipse([ex - CAP, ey - CAP, ex + CAP, ey + CAP],
+                     fill=(r, g, b, 255))
+
     return img
+
+
+def make_icon(color: str) -> Image.Image:
+    """生成 64×64 系统托盘图标。"""
+    return _make_icon_raw(color).resize((64, 64), Image.LANCZOS)
+
+
+def generate_icon_file(path: str) -> None:
+    """生成多分辨率 .ico 文件，供 Windows 桌面快捷方式使用。"""
+    raw   = _make_icon_raw(COLOR_IDLE)
+    sizes = [256, 128, 64, 48, 32, 24, 16]
+    imgs  = [raw.resize((s, s), Image.LANCZOS) for s in sizes]
+    imgs[0].save(path, format="ICO", append_images=imgs[1:])
 
 
 def notify(title: str, message: str):
@@ -333,6 +426,12 @@ def action_quit(icon, item):
 
 def main():
     global _icon
+
+    # CLI: python claude_launcher.py --generate-icon [path.ico]
+    if len(sys.argv) > 1 and sys.argv[1] == "--generate-icon":
+        out = sys.argv[2] if len(sys.argv) > 2 else "launcher_icon.ico"
+        generate_icon_file(out)
+        return
 
     # Linux 上 pystray 需要 AppIndicator，给个友好提示
     if IS_LINUX:
