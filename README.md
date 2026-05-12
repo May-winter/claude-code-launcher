@@ -58,7 +58,20 @@ cd claude-code-launcher
 1. 开启科学上网工具
 2. 双击桌面快捷方式（或运行 `python3 claude_launcher.py`）
 3. 系统托盘出现**节点光环图标**（深色背景 + 彩色分割环）
-4. 右键 → **启动 VS Code + Claude Desktop**
+4. 右键 → 选择启动项（菜单内容随已安装的应用自动变化，见下表）
+
+#### 托盘菜单按已安装应用动态调整
+
+工具会检测三个目标：**VS Code**、**Claude Desktop**（含新版 MSIX / 老版 Squirrel）、**VS Code 里的 Claude Code 扩展**（`anthropic.claude-code-*`），按下表呈现菜单：
+
+| 已安装组合 | 菜单项（★ 为默认双击项） |
+|---|---|
+| 仅 VS Code | ★ 🚀 启动 VS Code |
+| 仅 Claude Desktop | ★ 🚀 启动 Claude Desktop |
+| VS Code + Claude Desktop（无扩展） | ★ 🚀 启动 VS Code + Claude Desktop ／ 启动 VS Code（仅）／ 启动 Claude Desktop（仅） |
+| VS Code + Claude Code 扩展 | ★ 🚀 启动 VS Code + Claude Code |
+| 全部齐全 | ★ 🚀 启动 VS Code + Claude Code + Claude Desktop ／ 启动 VS Code + Claude Code（仅）／ 启动 Claude Desktop（仅） |
+| 都没装 | ⚠️ 提示文字（不可点） |
 
 ### 托盘图标颜色含义
 
@@ -78,25 +91,40 @@ cd claude-code-launcher
 3. **Linux**：读 `HTTP_PROXY` 环境变量，再查 `gsettings`
 4. 以上都没有：扫描候选端口 `7890 / 7892 / 10809 / 1080 / 8080 ...`
 
+**真实性校验**：候选端口仅"在监听"还不够——工具会再通过该端口对 `api.anthropic.com:443` 发一次 HTTP CONNECT 隧道，确认上游真的可达。绕过 Clash 的 fake-ip / 规则伪造，确保端口能用才设为代理。
+
+---
+
+### Windows Claude Desktop 路径自动识别
+
+Anthropic 已切换到 **MSIX / AppX 应用商店格式**分发 Claude Desktop，安装路径形如：
+
+```
+C:\Program Files\WindowsApps\Claude_<version>_x64__pzs8sxrjxfjjc\app\Claude.exe
+```
+
+工具用 `Get-AppxPackage -Name Claude` 动态查询安装位置，无需手动配置。同时兼容老版 Squirrel 路径（`%LOCALAPPDATA%\AnthropicClaude\app-*\claude.exe`）。
+
+> **注意**：通过 `shell:AppsFolder\...` 协议或开始菜单激活 AppX 应用时，**Windows AppX broker 会重置环境变量**，导致代理 env 丢失。本工具采用直接 `Popen` 绝对路径的方式，主进程及 renderer 子进程能完整继承代理 env。所以**必须从托盘启动 Claude Desktop**才有代理；直接点开始菜单的 Claude 图标不会带代理。
+
 ---
 
 ### 自定义配置
 
-用文本编辑器打开 `claude_launcher.py`，修改顶部配置区：
+在脚本同目录创建 `launcher_config.json` 即可覆盖所有自动检测值（无需修改 `claude_launcher.py`）：
 
-```python
-# VS Code 路径（通常自动检测，无需修改）
-VSCODE_PATH = _default_vscode()
-
-# Claude Desktop 路径
-CLAUDE_DESKTOP_PATH = _default_claude_desktop()
-
-# 默认打开的项目目录（留空则不指定）
-DEFAULT_PROJECT_DIR = ""
-
-# 候选代理端口扫描列表
-CANDIDATE_PORTS = [7890, 7891, 7892, 7893, 10809, 10808, 1080, 8080, 8118]
+```json
+{
+  "vscode_path": "D:\\Tools\\VSCode\\Code.exe",
+  "claude_desktop_path": "",
+  "default_project_dir": "D:\\projects",
+  "candidate_ports": [7892]
+}
 ```
+
+- 任一字段留空或省略，回退到自动检测
+- `candidate_ports` 写成单元素数组可**锁定代理端口**，避免回退扫描时被其他端口误选
+- 此文件已被 `.gitignore` 忽略（机器特定，不入仓）
 
 ---
 
@@ -168,7 +196,20 @@ cd claude-code-launcher
 1. Start your proxy tool
 2. Launch the app from your desktop shortcut (or `python3 claude_launcher.py`)
 3. Find the **node-ring icon** (dark background with colored segmented ring) in your system tray
-4. Right-click → **Launch VS Code + Claude Desktop**
+4. Right-click → pick a launch item (menu adapts to what's installed, see below)
+
+#### Tray menu adapts to installed apps
+
+The launcher detects three targets: **VS Code**, **Claude Desktop** (new MSIX *and* legacy Squirrel format), and the **Claude Code extension** inside VS Code (`anthropic.claude-code-*`). The menu is built accordingly:
+
+| Installed | Menu items (★ = default) |
+|---|---|
+| VS Code only | ★ 🚀 Launch VS Code |
+| Claude Desktop only | ★ 🚀 Launch Claude Desktop |
+| VS Code + Claude Desktop (no extension) | ★ 🚀 Launch VS Code + Claude Desktop ／ Launch VS Code only ／ Launch Claude Desktop only |
+| VS Code + Claude Code extension | ★ 🚀 Launch VS Code + Claude Code |
+| All three | ★ 🚀 Launch VS Code + Claude Code + Claude Desktop ／ Launch VS Code + Claude Code only ／ Launch Claude Desktop only |
+| Nothing detected | ⚠️ Disabled message |
 
 ### Icon colors
 
@@ -187,6 +228,41 @@ cd claude-code-launcher
 2. **macOS** — checks `HTTP_PROXY` env var, then `networksetup -getwebproxy`
 3. **Linux** — checks `HTTP_PROXY` env var, then `gsettings`
 4. Fallback — scans `CANDIDATE_PORTS` list with a 300ms socket timeout
+
+**Liveness check**: a listening port isn't enough — the launcher opens an HTTP CONNECT tunnel to `api.anthropic.com:443` through each candidate to confirm the upstream is actually reachable. This avoids being fooled by Clash fake-ip / rule-based local responders.
+
+---
+
+### Windows: Claude Desktop path auto-detection
+
+Anthropic now ships Claude Desktop as an **MSIX / AppX Store package**:
+
+```
+C:\Program Files\WindowsApps\Claude_<version>_x64__pzs8sxrjxfjjc\app\Claude.exe
+```
+
+The launcher resolves the install location dynamically via `Get-AppxPackage -Name Claude` — no manual config needed. The legacy Squirrel path (`%LOCALAPPDATA%\AnthropicClaude\app-*\claude.exe`) is also still supported.
+
+> **Caveat**: activating an AppX app through `shell:AppsFolder\...` or the Start menu causes Windows to **reset environment variables** in the new process — proxy env is lost. The launcher works around this by launching the absolute Claude.exe path directly with `Popen`, so the main process and renderers inherit proxy env correctly. This means **you must launch Claude Desktop from the tray** to get proxy injection; double-clicking the Start menu icon will not.
+
+---
+
+### Custom config
+
+Drop a `launcher_config.json` next to the script to override any auto-detected value (no need to edit `claude_launcher.py`):
+
+```json
+{
+  "vscode_path": "D:\\Tools\\VSCode\\Code.exe",
+  "claude_desktop_path": "",
+  "default_project_dir": "D:\\projects",
+  "candidate_ports": [7892]
+}
+```
+
+- Any empty/missing field falls back to auto-detection
+- A single-element `candidate_ports` array **locks the proxy port**, preventing the fallback scan from picking up a different one
+- The file is in `.gitignore` (machine-specific, not committed)
 
 ---
 
