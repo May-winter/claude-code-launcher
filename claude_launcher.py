@@ -101,6 +101,32 @@ def _detect_claude_code_extension() -> bool:
     return False
 
 
+def _win_appx_claude_path() -> str | None:
+    """
+    通过 PowerShell 查询 Anthropic Claude Desktop（MSIX / AppX 应用商店格式）
+    的安装路径。新版 Claude Desktop 装在 C:\\Program Files\\WindowsApps\\Claude_*。
+    实验证明：直接 Popen 这个 Claude.exe 能完整继承代理 env；而通过
+    shell:AppsFolder 或 explorer 激活则会丢失 env（AppX broker 重置环境）。
+    """
+    if not IS_WIN:
+        return None
+    try:
+        out = subprocess.check_output(
+            ["powershell", "-NoProfile", "-Command",
+             "Get-AppxPackage -Name Claude | "
+             "Select-Object -ExpandProperty InstallLocation"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=8,
+        ).strip()
+    except Exception:
+        return None
+    if not out:
+        return None
+    exe = os.path.join(out, "app", "Claude.exe")
+    return exe if os.path.exists(exe) else None
+
+
 def _default_claude_desktop() -> str:
     """自动检测 Claude Desktop 路径；找不到返回空字符串。"""
     if IS_WIN:
@@ -112,6 +138,8 @@ def _default_claude_desktop() -> str:
             reverse=True,
         )
         candidates = [
+            # 新版 MSIX / AppX 格式优先（Anthropic 当前官方分发渠道）
+            _win_appx_claude_path(),
             _win_app_path("claude.exe"),
             os.path.join(base, "claude.exe"),
             os.path.join(base, "Claude.exe"),

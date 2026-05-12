@@ -7,3 +7,6 @@ dist/
 build/
 *.spec
 .DS_Store
+
+# user-local launcher overrides (paths/ports specific to the machine)
+launcher_config.json
